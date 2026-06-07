@@ -1,22 +1,38 @@
-"""API-migration quality test (style follows Thamkhao/forget_quality.py).
+"""API-migration quality test (classification logic follows Thamkhao/forget_quality.py).
 
 This is NOT a training-loss check. It measures whether, after Prompt Tuning,
 [P_global] + probing_input actually generates the *replacement* API rather
-than the deprecated one. `y_pos` is used purely as a reference for exact-match
--- it is never fed into the model.
+than the deprecated one. `y_pos` is used purely as a reference -- it is never
+fed into the model.
+
+Each generated sample is bucketed exactly like Thamkhao/forget_quality.py
+(`check_api_usage` + alias dict, with replacement checked before deprecated):
+
+    - "replacement" (R) : prediction contains the replacement API
+    - "deprecated"  (D) : prediction still contains a deprecated API (and not R)
+    - "mismatch"        : neither API appears in the prediction
 
 Two ways to get predictions:
   1. `--predictions_file predictions.json`  (output of evaluate.py, fastest)
   2. `--checkpoint_dir ... --data_file ...` (generate on the fly, like
      forget_quality.py does -- handy for "test directly on the train set").
+
+Everything is written into a single `--output_dir`:
+  - forget_quality_metrics.json : total + counts/rates per type (R/D/Mismatch) + exact match
+  - forget_quality_details.json : per-sample {probing_input, target, predict, type, ...}
 """
 import argparse
+import os
 
 import torch
 from transformers import AutoTokenizer
 
 from evaluate import build_model_from_checkpoint, generate_predictions
 from utils import contains_api, load_json_or_jsonl, normalize_code_text, save_json, set_seed
+
+TYPE_REPLACEMENT = "replacement"
+TYPE_DEPRECATED = "deprecated"
+TYPE_MISMATCH = "mismatch"
 
 
 def parse_args():
@@ -33,8 +49,7 @@ def parse_args():
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--seed", type=int, default=42)
 
-    p.add_argument("--output_metrics", required=True)
-    p.add_argument("--output_details", required=True)
+    p.add_argument("--output_dir", required=True, help="folder to write forget_quality_metrics.json / forget_quality_details.json into")
     return p.parse_args()
 
 
@@ -59,13 +74,26 @@ def get_predictions(args):
                                 args.max_new_tokens, desc="Generating (forget-quality test)")
 
 
+def classify(prediction, replacement_api, deprecated_apis, alias_dict):
+    """Same priority as Thamkhao/forget_quality.py: replacement wins over deprecated."""
+    is_replacement = contains_api(prediction, replacement_api, alias_dict)
+    is_deprecated = any(contains_api(prediction, api, alias_dict) for api in deprecated_apis)
+    if is_replacement:
+        sample_type = TYPE_REPLACEMENT
+    elif is_deprecated:
+        sample_type = TYPE_DEPRECATED
+    else:
+        sample_type = TYPE_MISMATCH
+    return sample_type, is_replacement, is_deprecated
+
+
 def main():
     args = parse_args()
     predictions = get_predictions(args)
 
     details = []
+    type_counts = {TYPE_REPLACEMENT: 0, TYPE_DEPRECATED: 0, TYPE_MISMATCH: 0}
     new_api_hit = old_api_present = exact_match = 0
-    target_has_new = pred_has_new = 0
 
     for rec in predictions:
         meta = rec.get("metadata", {}) or {}
@@ -77,48 +105,58 @@ def main():
 
         prediction, target = rec["prediction"], rec["y_pos"]
 
-        is_new_hit = contains_api(prediction, replacement_api, alias_dict)
-        is_old_present = any(contains_api(prediction, api, alias_dict) for api in deprecated_apis)
+        sample_type, is_replacement, is_deprecated = classify(prediction, replacement_api, deprecated_apis, alias_dict)
         is_exact = normalize_code_text(prediction) == normalize_code_text(target)
-        target_contains_new = contains_api(target, replacement_api, alias_dict)
 
-        new_api_hit += int(is_new_hit)
-        old_api_present += int(is_old_present)
+        type_counts[sample_type] += 1
+        new_api_hit += int(is_replacement)
+        old_api_present += int(is_deprecated)
         exact_match += int(is_exact)
-        target_has_new += int(target_contains_new)
-        pred_has_new += int(is_new_hit)
 
         details.append({
             "probing_input": rec["probing_input"],
-            "y_pos": target,
-            "prediction": prediction,
+            "target": target,
+            "predict": prediction,
+            "type": sample_type,
             "deprecated_api": deprecated_apis,
             "replacement_api": replacement_api,
-            "new_api_hit": is_new_hit,
-            "old_api_still_present": is_old_present,
+            "new_api_hit": is_replacement,
+            "old_api_still_present": is_deprecated,
             "exact_match": is_exact,
         })
 
     total = len(predictions)
+    rate = lambda n: (n / total) if total else 0.0
     metrics = {
         "total": total,
+        "replacement_count": type_counts[TYPE_REPLACEMENT],
+        "replacement_rate": rate(type_counts[TYPE_REPLACEMENT]),
+        "deprecated_count": type_counts[TYPE_DEPRECATED],
+        "deprecated_rate": rate(type_counts[TYPE_DEPRECATED]),
+        "mismatch_count": type_counts[TYPE_MISMATCH],
+        "mismatch_rate": rate(type_counts[TYPE_MISMATCH]),
         "new_api_hit_count": new_api_hit,
-        "new_api_hit_rate": (new_api_hit / total) if total else 0.0,
+        "new_api_hit_rate": rate(new_api_hit),
         "old_api_still_present_count": old_api_present,
-        "old_api_still_present_rate": (old_api_present / total) if total else 0.0,
+        "old_api_still_present_rate": rate(old_api_present),
         "exact_match_count": exact_match,
-        "exact_match_rate": (exact_match / total) if total else 0.0,
-        "target_contains_new_api_count": target_has_new,
-        "prediction_contains_new_api_count": pred_has_new,
+        "exact_match_rate": rate(exact_match),
     }
 
-    save_json(metrics, args.output_metrics)
-    save_json(details, args.output_details)
+    os.makedirs(args.output_dir, exist_ok=True)
+    metrics_path = os.path.join(args.output_dir, "forget_quality_metrics.json")
+    details_path = os.path.join(args.output_dir, "forget_quality_details.json")
+    save_json(metrics, metrics_path)
+    save_json(details, details_path)
 
-    print(f"[*] forget-quality metrics -> {args.output_metrics}")
-    print(f"[*] forget-quality details -> {args.output_details}")
-    for k, v in metrics.items():
-        print(f"    {k}: {v}")
+    print(f"[*] forget-quality metrics -> {metrics_path}")
+    print(f"[*] forget-quality details -> {details_path}")
+    print("================ SUMMARY ================")
+    print(f"Replacement (R)  : {type_counts[TYPE_REPLACEMENT]}/{total}  ({rate(type_counts[TYPE_REPLACEMENT]):.2%})")
+    print(f"Deprecated  (D)  : {type_counts[TYPE_DEPRECATED]}/{total}  ({rate(type_counts[TYPE_DEPRECATED]):.2%})")
+    print(f"Mismatch         : {type_counts[TYPE_MISMATCH]}/{total}  ({rate(type_counts[TYPE_MISMATCH]):.2%})")
+    print(f"Exact match      : {exact_match}/{total}  ({rate(exact_match):.2%})")
+    print("==========================================")
 
 
 if __name__ == "__main__":

@@ -94,8 +94,7 @@ Outputs:
 ```bash
 python prompt_tuning_deepseek/test_forget_quality.py \
   --predictions_file outputs/prompt_tuning_deepseek_global/predictions.json \
-  --output_metrics outputs/prompt_tuning_deepseek_global/forget_quality_metrics.json \
-  --output_details outputs/prompt_tuning_deepseek_global/forget_quality_details.json
+  --output_dir outputs/prompt_tuning_deepseek_global
 ```
 
 Or generate on the fly (style of `Thamkhao/forget_quality.py`, e.g. to test
@@ -106,17 +105,24 @@ python prompt_tuning_deepseek/test_forget_quality.py \
   --checkpoint_dir outputs/prompt_tuning_deepseek_global \
   --data_file data_raw/outdated_y+_FINAL.json \
   --limit 500 \
-  --output_metrics outputs/prompt_tuning_deepseek_global/forget_quality_metrics.json \
-  --output_details outputs/prompt_tuning_deepseek_global/forget_quality_details.json
+  --output_dir outputs/prompt_tuning_deepseek_global
 ```
 
-This checks, per sample, whether the generation contains the `replacement_api`
-(hit) and/or still contains a `deprecated_api` (regression), using each
-sample's own `alias dict` (e.g. `np.prod` ↔ `numpy.prod`) so short aliases
-count as a match — see `contains_api()` in `utils.py`. It writes
-`forget_quality_metrics.json` (`new_api_hit_rate`, `old_api_still_present_rate`,
-`exact_match_rate`, ...) and `forget_quality_details.json` (per-sample
-breakdown).
+For every sample, the prediction is bucketed exactly like
+`Thamkhao/forget_quality.py` (`check_api_usage` + each sample's own `alias
+dict`, e.g. `np.prod` ↔ `numpy.prod`, replacement checked before deprecated —
+see `classify()` / `contains_api()`):
+
+- **`replacement` (R)** — prediction contains the replacement API
+- **`deprecated` (D)** — prediction still contains a deprecated API (and not R)
+- **`mismatch`** — neither API appears
+
+Everything is written into `--output_dir`:
+
+- `forget_quality_metrics.json` — `total`, `replacement_count/_rate`,
+  `deprecated_count/_rate`, `mismatch_count/_rate`, `exact_match_count/_rate`, ...
+- `forget_quality_details.json` — per-sample `{probing_input, target, predict,
+  type, deprecated_api, replacement_api, ...}`
 
 ## Training flow (short version)
 
