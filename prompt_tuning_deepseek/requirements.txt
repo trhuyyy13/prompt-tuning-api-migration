@@ -1,0 +1,10 @@
+transformers>=4.39
+accelerate
+torch
+tqdm
+numpy
+scikit-learn
+evaluate
+rouge-score
+sacrebleu
+sentencepiece
