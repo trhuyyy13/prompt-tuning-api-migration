@@ -10,7 +10,7 @@ Giả định: bạn tải code này từ GitHub thẳng vào Kaggle Notebook.
 ## 2. Clone repo
 
 ```python
-!git clone <URL_REPO_GITHUB_CUA_BAN> /kaggle/working/repo
+!git clone https://github.com/trhuyyy13/prompt-tuning-api-migration /kaggle/working/repo
 %cd /kaggle/working/repo
 ```
 
@@ -89,15 +89,11 @@ xem README chính để biết lý do không batch generation với soft prompt)
 
 ## 7. Test forget quality / API migration quality
 
-Phân loại từng mẫu theo đúng logic `Thamkhao/forget_quality.py` (dựa vào
-`deprecated api` / `replacement api` / `alias dict` của chính mẫu đó) thành
-3 loại: **`replacement` (R)**, **`deprecated` (D)**, **`mismatch`** — và đếm
-xem có bao nhiêu mẫu rơi vào mỗi loại.
-
 ```python
 !python prompt_tuning_deepseek/test_forget_quality.py \
   --predictions_file /kaggle/working/outputs/prompt_tuning_deepseek_global/predictions.json \
-  --output_dir /kaggle/working/outputs/prompt_tuning_deepseek_global
+  --output_metrics /kaggle/working/outputs/prompt_tuning_deepseek_global/forget_quality_metrics.json \
+  --output_details /kaggle/working/outputs/prompt_tuning_deepseek_global/forget_quality_details.json
 ```
 
 Hoặc generate thẳng từ checkpoint (không cần chạy bước 6 trước, giống style
@@ -108,15 +104,50 @@ Hoặc generate thẳng từ checkpoint (không cần chạy bước 6 trước,
   --checkpoint_dir /kaggle/working/outputs/prompt_tuning_deepseek_global \
   --data_file data_raw/outdated_y+_FINAL.json \
   --limit 500 \
-  --output_dir /kaggle/working/outputs/prompt_tuning_deepseek_global
+  --output_metrics /kaggle/working/outputs/prompt_tuning_deepseek_global/forget_quality_metrics.json \
+  --output_details /kaggle/working/outputs/prompt_tuning_deepseek_global/forget_quality_details.json
 ```
 
-Kết quả ghi vào `--output_dir`:
-- `forget_quality_metrics.json` — `total`, `replacement_count/_rate`,
-  `deprecated_count/_rate`, `mismatch_count/_rate`, `exact_match_count/_rate`, ...
-- `forget_quality_details.json` — từng mẫu dạng
-  `{probing_input, target, predict, type, deprecated_api, replacement_api, ...}`
-  với `type` ∈ `replacement` / `deprecated` / `mismatch`
+## 8. Push checkpoint lên Hugging Face Hub
+
+Trước tiên tạo token tại https://huggingface.co/settings/tokens (chọn quyền **Write**).
+Có 2 cách nhập token vào notebook — **chọn 1**:
+
+### Cách 1 — Kaggle Secrets (khuyên dùng: token không hiện ra trong notebook/output)
+
+- Mở **Add-ons → Secrets**, thêm secret tên `HF_TOKEN`, giá trị = token vừa tạo.
+- Trong cell đầu tiên:
+
+```python
+from kaggle_secrets import UserSecretsClient
+import os
+os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+```
+
+### Cách 2 — Nhập tay mỗi lần chạy (token chỉ tồn tại trong phiên hiện tại)
+
+```python
+import os, getpass
+os.environ["HF_TOKEN"] = getpass.getpass("Nhập Hugging Face token (write): ")
+```
+
+### Push
+
+`push_to_hub.py` tự đọc token từ biến môi trường `HF_TOKEN` (hoặc truyền `--token`
+nếu muốn). Repo sẽ được tạo tự động nếu chưa tồn tại (mặc định public — thêm
+`--private` nếu muốn riêng tư):
+
+```python
+!python prompt_tuning_deepseek/push_to_hub.py \
+  --checkpoint_dir /kaggle/working/outputs/prompt_tuning_deepseek_global \
+  --repo_id <ten-cua-ban>/depapi-soft-prompt-deepseek \
+  --commit_message "soft prompt sau 10 epoch"
+```
+
+Toàn bộ thư mục `--checkpoint_dir` (`soft_prompt.pt`, tokenizer, `training_state.pt`,
+`prompt_config.json`, `training_args.json`, ...) được upload nguyên trạng — đủ để
+sau này tải lại bằng `huggingface_hub.snapshot_download(repo_id=...)` rồi trỏ
+`--checkpoint_dir` của `evaluate.py` / `test_forget_quality.py` vào thư mục đã tải.
 
 ## Lưu ý nhanh cho Kaggle
 
