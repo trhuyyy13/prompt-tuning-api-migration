@@ -30,7 +30,7 @@ def parse_args():
 
     p.add_argument("--num_virtual_tokens", type=int, default=20)
     p.add_argument("--prompt_init", choices=PROMPT_INIT_CHOICES, default="random")
-    p.add_argument("--prompt_init_text", default="Generate the migrated API line:")
+    p.add_argument("--prompt_init_text", default="Generate the next line:")
 
     p.add_argument("--max_input_length", type=int, default=512)
     p.add_argument("--max_target_length", type=int, default=128)

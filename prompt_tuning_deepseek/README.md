@@ -37,7 +37,7 @@ python prompt_tuning_deepseek/train_prompt_tuning.py \
   --output_dir outputs/prompt_tuning_deepseek_global \
   --num_virtual_tokens 20 \
   --prompt_init random \
-  --prompt_init_text "Generate the migrated API line:" \
+  --prompt_init_text "Generate the next line:" \
   --max_input_length 512 \
   --max_target_length 128 \
   --max_seq_length 640 \
