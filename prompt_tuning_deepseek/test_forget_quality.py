@@ -12,10 +12,13 @@ Each generated sample is bucketed exactly like Thamkhao/forget_quality.py
     - "deprecated"  (D) : prediction still contains a deprecated API (and not R)
     - "mismatch"        : neither API appears in the prediction
 
-Two ways to get predictions:
+Three ways to get predictions:
   1. `--predictions_file predictions.json`  (output of evaluate.py, fastest)
   2. `--checkpoint_dir ... --data_file ...` (generate on the fly, like
      forget_quality.py does -- handy for "test directly on the train set").
+  3. `--baseline --data_file ...` (no checkpoint: run the *original*,
+     untouched base model -- handy for measuring the R/D/Mismatch split
+     BEFORE prompt tuning, as a point of comparison).
 
 Everything is written into a single `--output_dir`:
   - forget_quality_metrics.json : total + counts/rates per type (R/D/Mismatch) + exact match
@@ -27,7 +30,7 @@ import os
 import torch
 from transformers import AutoTokenizer
 
-from evaluate import build_model_from_checkpoint, generate_predictions
+from evaluate import build_base_model, build_model_from_checkpoint, generate_predictions
 from utils import contains_api, load_json_or_jsonl, normalize_code_text, save_json, set_seed
 
 TYPE_REPLACEMENT = "replacement"
@@ -43,6 +46,10 @@ def parse_args():
     # Used only when --predictions_file is not given.
     p.add_argument("--model_name_or_path", default="deepseek-ai/deepseek-coder-1.3b-base")
     p.add_argument("--checkpoint_dir", default=None)
+    p.add_argument("--baseline", action="store_true",
+                   help="Skip the soft prompt and run the original base model as-is "
+                        "(measures R/D/Mismatch BEFORE prompt tuning). "
+                        "Mutually exclusive with --checkpoint_dir.")
     p.add_argument("--data_file", default=None)
     p.add_argument("--max_input_length", type=int, default=512)
     p.add_argument("--max_new_tokens", type=int, default=128)
@@ -57,8 +64,11 @@ def get_predictions(args):
     if args.predictions_file:
         return load_json_or_jsonl(args.predictions_file)
 
-    if not (args.checkpoint_dir and args.data_file):
-        raise ValueError("Provide either --predictions_file, or both --checkpoint_dir and --data_file")
+    if args.baseline and args.checkpoint_dir:
+        raise ValueError("--baseline and --checkpoint_dir are mutually exclusive")
+    if not args.data_file or not (args.baseline or args.checkpoint_dir):
+        raise ValueError("Provide either --predictions_file, or --data_file with "
+                         "--checkpoint_dir (trained soft prompt) or --baseline (original model)")
 
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,7 +76,10 @@ def get_predictions(args):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = build_model_from_checkpoint(args.model_name_or_path, args.checkpoint_dir, tokenizer, device)
+    if args.baseline:
+        model = build_base_model(args.model_name_or_path, tokenizer, device)
+    else:
+        model = build_model_from_checkpoint(args.model_name_or_path, args.checkpoint_dir, tokenizer, device)
     samples = load_json_or_jsonl(args.data_file)
     if args.limit:
         samples = samples[: args.limit]

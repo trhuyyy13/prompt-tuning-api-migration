@@ -48,6 +48,26 @@ def load_prompt_config(checkpoint_dir):
         return json.load(f)
 
 
+def build_base_model(model_name_or_path, tokenizer, device):
+    """Wrap the untouched base model with a zero-length soft prompt.
+
+    This reuses the exact same generation path as `build_model_from_checkpoint`
+    (`generate_with_soft_prompt` -> `inputs_embeds=...`) with a no-op prompt, so
+    "before tuning" and "after tuning" numbers are produced by identical code
+    and are directly comparable.
+    """
+    model = SoftPromptCausalLM(
+        model_name_or_path=model_name_or_path,
+        num_virtual_tokens=0,
+        prompt_init="random",
+        tokenizer=tokenizer,
+    )
+    model.to(device)
+    model.eval()
+    print(f"[*] loaded base model {model_name_or_path} as-is (no soft prompt -- baseline)")
+    return model
+
+
 def build_model_from_checkpoint(model_name_or_path, checkpoint_dir, tokenizer, device):
     cfg = load_prompt_config(checkpoint_dir)
     model = SoftPromptCausalLM(
