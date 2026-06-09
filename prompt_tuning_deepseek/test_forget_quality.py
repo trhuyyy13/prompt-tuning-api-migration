@@ -55,6 +55,8 @@ def parse_args():
     p.add_argument("--max_new_tokens", type=int, default=128)
     p.add_argument("--batch_size", type=int, default=8,
                    help="number of samples per generation batch (default 8; use 1 for debugging)")
+    p.add_argument("--num_beams", type=int, default=1,
+                   help="beam width for generation (default 1 = greedy)")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--seed", type=int, default=42)
 
@@ -102,7 +104,8 @@ def get_predictions(args):
     if args.limit:
         samples = samples[: args.limit]
     return generate_predictions(model, tokenizer, samples, device, args.max_input_length,
-                                args.max_new_tokens, batch_size=args.batch_size,
+                                args.max_new_tokens, num_beams=args.num_beams,
+                                batch_size=args.batch_size,
                                 desc="Generating (forget-quality test)")
 
 
