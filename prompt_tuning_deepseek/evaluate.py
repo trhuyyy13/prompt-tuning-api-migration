@@ -37,6 +37,8 @@ def parse_args():
     p.add_argument("--metrics_file", default=None, help="defaults to <output_dir>/metrics.json")
     p.add_argument("--max_input_length", type=int, default=512)
     p.add_argument("--max_new_tokens", type=int, default=128)
+    p.add_argument("--batch_size", type=int, default=8,
+                   help="number of samples per generation batch (default 8; use 1 for debugging)")
     p.add_argument("--limit", type=int, default=None, help="evaluate on only the first N samples")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
@@ -115,32 +117,55 @@ def build_model_from_checkpoint(model_name_or_path, checkpoint_dir, tokenizer, d
 
 @torch.no_grad()
 def generate_predictions(model, tokenizer, samples, device, max_input_length, max_new_tokens,
-                          do_sample=False, num_beams=1, desc="Generating"):
-    """Run [P_global] + probing_input -> generation for each sample (y_pos is NOT used as input)."""
-    predictions = []
-    for sample in tqdm(samples, desc=desc):
-        input_text = first_present(sample, INPUT_FIELD_CANDIDATES)
-        target_text = first_present(sample, TARGET_FIELD_CANDIDATES)
-        if input_text is None or target_text is None:
-            continue
+                          do_sample=False, num_beams=1, batch_size=8, desc="Generating"):
+    """Run [P_global] + probing_input -> generation for each sample (y_pos is NOT used as input).
 
-        encoded = tokenizer(input_text, add_special_tokens=False, truncation=True,
-                            max_length=max_input_length, return_tensors="pt")
-        input_ids = encoded["input_ids"].to(device)
+    Uses left-padded batched generation for higher GPU throughput.
+    """
+    # Collect valid (sample, input_text, target_text) tuples first.
+    valid = []
+    for s in samples:
+        inp = first_present(s, INPUT_FIELD_CANDIDATES)
+        tgt = first_present(s, TARGET_FIELD_CANDIDATES)
+        if inp is not None and tgt is not None:
+            valid.append((s, inp, tgt))
+
+    # Left-pad so the model generates from the rightmost real token.
+    orig_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+
+    predictions = []
+    for i in tqdm(range(0, len(valid), batch_size), desc=desc):
+        chunk = valid[i : i + batch_size]
+        batch_samples, batch_inputs, batch_targets = zip(*chunk)
+
+        encoded = tokenizer(
+            list(batch_inputs),
+            add_special_tokens=False,
+            truncation=True,
+            max_length=max_input_length,
+            padding=True,
+            return_tensors="pt",
+        )
+        input_ids    = encoded["input_ids"].to(device)
         attention_mask = encoded["attention_mask"].to(device)
 
         output_ids = model.generate_with_soft_prompt(
             input_ids=input_ids, attention_mask=attention_mask,
             max_new_tokens=max_new_tokens, do_sample=do_sample, num_beams=num_beams,
         )
-        prediction = tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
-        predictions.append({
-            "probing_input": input_text,
-            "y_pos": target_text,
-            "prediction": prediction,
-            "metadata": build_metadata(sample),
-        })
+        for j, (sample, input_text, target_text) in enumerate(chunk):
+            row_ids = output_ids[j] if output_ids.ndim > 1 else output_ids
+            prediction = tokenizer.decode(row_ids, skip_special_tokens=True)
+            predictions.append({
+                "probing_input": input_text,
+                "y_pos": target_text,
+                "prediction": prediction,
+                "metadata": build_metadata(sample),
+            })
+
+    tokenizer.padding_side = orig_padding_side
     return predictions
 
 
@@ -221,7 +246,8 @@ def main():
     print(f"[*] generating for {len(samples)} samples (max_new_tokens={args.max_new_tokens}, greedy)")
 
     predictions = generate_predictions(model, tokenizer, samples, device,
-                                        args.max_input_length, args.max_new_tokens)
+                                        args.max_input_length, args.max_new_tokens,
+                                        batch_size=args.batch_size)
     save_json(predictions, args.output_file)
     print(f"[*] wrote predictions -> {args.output_file}")
 

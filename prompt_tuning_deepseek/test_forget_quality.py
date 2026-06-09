@@ -53,6 +53,8 @@ def parse_args():
     p.add_argument("--data_file", default=None)
     p.add_argument("--max_input_length", type=int, default=512)
     p.add_argument("--max_new_tokens", type=int, default=128)
+    p.add_argument("--batch_size", type=int, default=8,
+                   help="number of samples per generation batch (default 8; use 1 for debugging)")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--seed", type=int, default=42)
 
@@ -100,7 +102,8 @@ def get_predictions(args):
     if args.limit:
         samples = samples[: args.limit]
     return generate_predictions(model, tokenizer, samples, device, args.max_input_length,
-                                args.max_new_tokens, desc="Generating (forget-quality test)")
+                                args.max_new_tokens, batch_size=args.batch_size,
+                                desc="Generating (forget-quality test)")
 
 
 def classify(prediction, replacement_api, deprecated_apis, alias_dict):
