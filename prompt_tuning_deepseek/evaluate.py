@@ -42,7 +42,30 @@ def parse_args():
     return p.parse_args()
 
 
+def _resolve_checkpoint_dir(checkpoint_dir: str) -> str:
+    """Return a local directory path for the checkpoint.
+
+    If *checkpoint_dir* is an existing local directory, return it as-is.
+    Otherwise treat it as a Hugging Face Hub repo ID and download the repo
+    to a local cache directory via ``huggingface_hub.snapshot_download``.
+    """
+    if os.path.isdir(checkpoint_dir):
+        return checkpoint_dir
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise ImportError(
+            "huggingface_hub is required to load checkpoints from the Hub. "
+            "Install it with: pip install huggingface_hub"
+        ) from e
+    print(f"[*] {checkpoint_dir!r} is not a local directory — downloading from Hugging Face Hub...")
+    local_dir = snapshot_download(repo_id=checkpoint_dir)
+    print(f"[*] downloaded to {local_dir}")
+    return local_dir
+
+
 def load_prompt_config(checkpoint_dir):
+    checkpoint_dir = _resolve_checkpoint_dir(checkpoint_dir)
     path = os.path.join(checkpoint_dir, "prompt_config.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -69,14 +92,19 @@ def build_base_model(model_name_or_path, tokenizer, device):
 
 
 def build_model_from_checkpoint(model_name_or_path, checkpoint_dir, tokenizer, device):
-    cfg = load_prompt_config(checkpoint_dir)
+    local_dir = _resolve_checkpoint_dir(checkpoint_dir)
+    cfg = load_prompt_config(local_dir)
+    # Prefer the base model recorded at training time; fall back to the CLI arg.
+    resolved_base = cfg.get("model_name_or_path") or model_name_or_path
+    if resolved_base != model_name_or_path:
+        print(f"[*] using base model from checkpoint config: {resolved_base}")
     model = SoftPromptCausalLM(
-        model_name_or_path=model_name_or_path,
+        model_name_or_path=resolved_base,
         num_virtual_tokens=cfg["num_virtual_tokens"],
         prompt_init="random",  # overwritten by the trained checkpoint right below
         tokenizer=tokenizer,
     )
-    soft_prompt = load_soft_prompt_checkpoint(checkpoint_dir)
+    soft_prompt = load_soft_prompt_checkpoint(local_dir)
     with torch.no_grad():
         model.soft_prompt.copy_(soft_prompt.to(device=model.soft_prompt.device, dtype=model.soft_prompt.dtype))
     model.to(device)
@@ -173,11 +201,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] device = {device}")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+    # Resolve base model from checkpoint config so --checkpoint_dir <hf-repo-id>
+    # works without also specifying --model_name_or_path.
+    local_dir = _resolve_checkpoint_dir(args.checkpoint_dir)
+    cfg = load_prompt_config(local_dir)
+    base_model = cfg.get("model_name_or_path") or args.model_name_or_path
+    if base_model != args.model_name_or_path:
+        print(f"[*] using base model from checkpoint config: {base_model}")
+
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = build_model_from_checkpoint(args.model_name_or_path, args.checkpoint_dir, tokenizer, device)
+    model = build_model_from_checkpoint(base_model, local_dir, tokenizer, device)
 
     samples = load_json_or_jsonl(args.data_file)
     if args.limit:

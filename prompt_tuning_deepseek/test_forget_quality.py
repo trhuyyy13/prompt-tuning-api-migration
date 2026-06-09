@@ -72,14 +72,30 @@ def get_predictions(args):
 
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+
+    # Resolve the base model name: prefer what was recorded in prompt_config.json
+    # (so passing a HF Hub repo ID as --checkpoint_dir just works without also
+    # specifying --model_name_or_path).
+    base_model = args.model_name_or_path
+    if not args.baseline and args.checkpoint_dir:
+        from evaluate import _resolve_checkpoint_dir, load_prompt_config
+        try:
+            local_dir = _resolve_checkpoint_dir(args.checkpoint_dir)
+            cfg = load_prompt_config(local_dir)
+            base_model = cfg.get("model_name_or_path") or base_model
+            if base_model != args.model_name_or_path:
+                print(f"[*] using base model from checkpoint config: {base_model}")
+        except Exception:
+            pass  # fall back to --model_name_or_path
+
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     if args.baseline:
-        model = build_base_model(args.model_name_or_path, tokenizer, device)
+        model = build_base_model(base_model, tokenizer, device)
     else:
-        model = build_model_from_checkpoint(args.model_name_or_path, args.checkpoint_dir, tokenizer, device)
+        model = build_model_from_checkpoint(base_model, args.checkpoint_dir, tokenizer, device)
     samples = load_json_or_jsonl(args.data_file)
     if args.limit:
         samples = samples[: args.limit]
